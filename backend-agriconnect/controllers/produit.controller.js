@@ -1,9 +1,16 @@
 import pool from "../config/db.js";
+import supabase from "../config/supabaseClient.js"; 
+import { v4 as uuidv4 } from 'uuid';
 
 // ➕ Ajouter un produit (producteur validé uniquement)
 export const addProduit = async (req, res) => {
   try {
     const { nom, prix_unitaire, stock } = req.body;
+    const imageFile = req.file;
+
+    if (!imageFile) {
+      return res.status(400).json({ message: "Veuillez télécharger une image pour le produit." });
+    }
 
     // Vérifier que l’utilisateur est un producteur
     const producteurResult = await pool.query(
@@ -21,10 +28,33 @@ export const addProduit = async (req, res) => {
       return res.status(403).json({ message: "Votre compte producteur n’est pas validé" });
     }
 
+    // --- Logique d'upload d'image vers Supabase ---
+    const fileName = `${uuidv4()}-${imageFile.originalname}`;
+    const path = `${producteur.id}/${fileName}`;
+    
+    const { data, error: uploadError } = await supabase.storage
+      .from('produits')
+      .upload(path, imageFile.buffer, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: imageFile.mimetype,
+      });
+    
+    if (uploadError) {
+      console.error("Erreur de téléchargement Supabase:", uploadError.message);
+      return res.status(500).json({ message: "Échec du téléchargement de l'image." });
+    }
+    
+    const { data: publicUrlData } = supabase.storage
+      .from('produits')
+      .getPublicUrl(path);
+
+    const imageUrl = publicUrlData.publicUrl;
+      
     // Insérer le produit
     const result = await pool.query(
-      "INSERT INTO Produit (producteur_id, nom, prix_unitaire, stock) VALUES ($1, $2, $3, $4) RETURNING *",
-      [producteur.id, nom, prix_unitaire, stock]
+      "INSERT INTO Produit (producteur_id, nom, prix_unitaire, stock, image_url) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [producteur.id, nom, prix_unitaire, stock, imageUrl]
     );
 
     res.status(201).json({ message: "Produit ajouté avec succès", produit: result.rows[0] });
@@ -65,9 +95,11 @@ export const getProduits = async (req, res) => {
 
     // Récupérer seulement ses produits
     const result = await pool.query(
-      "SELECT id, nom, prix_unitaire, stock FROM Produit WHERE producteur_id = $1",
+      "SELECT id, nom, prix_unitaire, stock, image_url FROM Produit WHERE producteur_id = $1",
       [producteur.id]
     );
+
+    console.log("Données envoyées au client:", result.rows);
 
     res.json(result.rows);
   } catch (error) {
